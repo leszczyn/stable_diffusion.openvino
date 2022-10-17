@@ -2,6 +2,7 @@ import inspect
 import numpy as np
 # openvino
 from openvino.runtime import Core
+from openvino.runtime import serialize
 # tokenizer
 from transformers import CLIPTokenizer
 # utils
@@ -10,6 +11,25 @@ from huggingface_hub import hf_hub_download
 from diffusers import LMSDiscreteScheduler, PNDMScheduler
 import cv2
 
+from openvino.runtime import Model, PartialShape, Shape, opset8, Core
+from openvino.runtime.passes import (
+    Manager,
+    ConstantFolding,
+    MakeStateful,
+    ConvertFP32ToFP16,
+    LowLatency2,
+    Serialize,
+)
+
+
+
+import os
+proxy = 'http://proxy-chain.intel.com:911'
+
+os.environ['http_proxy'] = proxy
+os.environ['HTTP_PROXY'] = proxy
+os.environ['https_proxy'] = proxy
+os.environ['HTTPS_PROXY'] = proxy
 
 def result(var):
     return next(iter(var.values()))
@@ -21,23 +41,46 @@ class StableDiffusionEngine:
             scheduler,
             model="bes-dev/stable-diffusion-v1-4-openvino",
             tokenizer="openai/clip-vit-large-patch14",
-            device="CPU"
+            device="GPU"
     ):
+      
         self.tokenizer = CLIPTokenizer.from_pretrained(tokenizer)
         self.scheduler = scheduler
         # models
         self.core = Core()
         # text features
+        
+        
+        
+        
+        
         self._text_encoder = self.core.read_model(
             hf_hub_download(repo_id=model, filename="text_encoder.xml"),
             hf_hub_download(repo_id=model, filename="text_encoder.bin")
         )
+        xml_path = "text_encoder_fp16.xml"
+        bin_path = "text_encoder_fp16.bin"
+        manager = Manager()
+        manager.register_pass(ConvertFP32ToFP16())
+        manager.register_pass(Serialize(xml_path, bin_path))
+        manager.run_passes(self._text_encoder)
+        
+        #serialize(self._text_encoder, xml_path, bin_path, version="IR_V11")
         self.text_encoder = self.core.compile_model(self._text_encoder, device)
         # diffusion
         self._unet = self.core.read_model(
             hf_hub_download(repo_id=model, filename="unet.xml"),
             hf_hub_download(repo_id=model, filename="unet.bin")
         )
+        xml_path = "unet_fp16.xml"
+        bin_path = "unet_fp16.bin"
+        manager = Manager()
+        manager.register_pass(ConvertFP32ToFP16())
+        manager.register_pass(Serialize(xml_path, bin_path))
+        manager.run_passes(self._unet)
+        
+        
+        #serialize(self._unet, xml_path="./unet.xml", bin_path="./unet.bin", version="IR_V11")
         self.unet = self.core.compile_model(self._unet, device)
         self.latent_shape = tuple(self._unet.inputs[0].shape)[1:]
         # decoder
@@ -45,12 +88,27 @@ class StableDiffusionEngine:
             hf_hub_download(repo_id=model, filename="vae_decoder.xml"),
             hf_hub_download(repo_id=model, filename="vae_decoder.bin")
         )
+        xml_path = "vae_decoder_fp16.xml"
+        bin_path = "vae_decoder_fp16.bin"
+        manager = Manager()
+        manager.register_pass(ConvertFP32ToFP16())
+        manager.register_pass(Serialize(xml_path, bin_path))
+        manager.run_passes(self._vae_decoder)
+        
+        #serialize(self._vae_decoder, xml_path="./vae_decoder.xml", bin_path="./vae_decoder.bin", version="IR_V11")
         self.vae_decoder = self.core.compile_model(self._vae_decoder, device)
         # encoder
         self._vae_encoder = self.core.read_model(
             hf_hub_download(repo_id=model, filename="vae_encoder.xml"),
             hf_hub_download(repo_id=model, filename="vae_encoder.bin")
         )
+        xml_path = "vae_encoder_fp16.xml"
+        bin_path = "vae_encoder_fp16.bin"
+        manager = Manager()
+        manager.register_pass(ConvertFP32ToFP16())
+        manager.register_pass(Serialize(xml_path, bin_path))
+        manager.run_passes(self._vae_encoder)
+        #serialize(self._vae_encoder, xml_path="./vae_encoder.xml", bin_path="./vae_encoder.bin", version="IR_V11")
         self.vae_encoder = self.core.compile_model(self._vae_encoder, device)
         self.init_image_shape = tuple(self._vae_encoder.inputs[0].shape)[2:]
 
